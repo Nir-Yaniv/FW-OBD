@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fw-obd"
+version = "0.1.0"
+description = "Multi-vendor firewall management and diagnostics platform"
+requires-python = ">=3.11"
+dependencies = [
+    "netmiko>=4.3",
+    "paramiko>=3.4",
+    "PyQt6>=6.7",
+    "cryptography>=42.0",
+    "anthropic>=0.28",
+    "openai>=1.30",
+    "requests>=2.31",
+    "pydantic>=2.7",
+    "keyring>=25.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-qt>=4.4",
+    "pytest-asyncio>=0.23",
+    "black>=24.4",
+    "pylint>=3.2",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+fw-obd = "fw_obd.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pylint.main]
+source-roots = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true

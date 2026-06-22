@@ -1,0 +1,56 @@
+{
+  "source": "Fortinet Security Best Practices Guide 2024",
+  "version": "7.x",
+  "practices": [
+    {
+      "id": "admin-001",
+      "category": "Admin Access Hardening",
+      "title": "Restrict management access to trusted IPs",
+      "detail": "Never allow HTTPS/SSH/Telnet management access from 'all' source IPs. Restrict to specific admin subnets.",
+      "cli_example": "config system interface\n  edit <mgmt-interface>\n    set allowaccess https ssh\n  next\nend",
+      "severity": "critical",
+      "reference": "§2.1 Admin Access Hardening"
+    },
+    {
+      "id": "admin-002",
+      "category": "Admin Access Hardening",
+      "title": "Change default admin credentials",
+      "detail": "The default 'admin' account with blank password must be changed before production deployment.",
+      "severity": "critical",
+      "reference": "§2.2 Default Credentials"
+    },
+    {
+      "id": "logging-001",
+      "category": "Logging",
+      "title": "Enable logging on all allow policies",
+      "detail": "All policies with action 'accept' should have logtraffic set to 'all' or 'utm'. Without logging, traffic is invisible for security monitoring.",
+      "cli_example": "config firewall policy\n  edit <id>\n    set logtraffic all\n  next\nend",
+      "severity": "high",
+      "reference": "§5.2 Logging Configuration"
+    },
+    {
+      "id": "vpn-001",
+      "category": "VPN Security",
+      "title": "Use IKEv2 for new VPN tunnels",
+      "detail": "IKEv2 provides better security and performance than IKEv1. Use for all new IPSec tunnel configurations.",
+      "severity": "medium",
+      "reference": "§4.3 VPN Configuration"
+    },
+    {
+      "id": "vpn-002",
+      "category": "VPN Security",
+      "title": "Use AES-256 encryption with SHA-256 or higher",
+      "detail": "AES-256 and SHA-256+ are required for HIPAA and PCI-DSS compliance. Avoid 3DES, DES, MD5, and SHA1.",
+      "severity": "high",
+      "reference": "§4.3 VPN Configuration — Encryption Standards"
+    },
+    {
+      "id": "vpn-003",
+      "category": "VPN Security",
+      "title": "Use DH group 14 or higher",
+      "detail": "DH groups 1, 2, and 5 are considered weak. Use group 14 (2048-bit) minimum, prefer group 19 or 20 (ECDH).",
+      "severity": "high",
+      "reference": "§4.3 VPN Configuration — Key Exchange"
+    }
+  ]
+}

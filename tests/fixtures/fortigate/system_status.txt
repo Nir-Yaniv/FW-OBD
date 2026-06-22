@@ -1,0 +1,21 @@
+Version: FortiGate-90G v7.4.2,build2571,231127 (GA.F)
+Virus-DB: 90.08762(2024-01-15 09:33)
+Extended DB: 90.08762(2024-01-15 09:33)
+IPS-DB: 6.00741(2018-12-18 16:41)
+IPS-ETDB: 0.00000(2001-01-01 00:00)
+APP-DB: 6.00741(2018-12-18 16:41)
+Industrial-DB: 6.00001(2018-11-22 21:24)
+Serial-Number: FG90GXXXXXXXXXX1
+IPS Malicious URL Database: 2.00238(2019-06-14 06:56)
+BIOS version: 04000018
+Platform Full Name: FortiGate-90G
+Log hard disk: Available
+Hostname: FG-90G-NewJersey
+Distribution: International
+Branch point: 2571
+Release Version Information: GA
+Current HA mode: standalone
+Cluster uptime: 00:00:00
+Cluster state change time: 2024-01-10 08:00:00
+License Status: Valid
+VM Resources: NA

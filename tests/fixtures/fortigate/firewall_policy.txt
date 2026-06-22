@@ -1,0 +1,36 @@
+config firewall policy
+    edit 1
+        set name "LAN-to-WAN"
+        set srcintf "internal"
+        set dstintf "wan1"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic all
+        set nat enable
+    next
+    edit 2
+        set name "VPN-Hospital-to-NJ"
+        set srcintf "tunnel.1"
+        set dstintf "internal"
+        set srcaddr "Hospital-TelAviv-Net"
+        set dstaddr "NJ-DataCenter-Net"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set logtraffic disable
+    next
+    edit 3
+        set name "Admin-HTTPS"
+        set srcintf "wan1"
+        set dstintf "internal"
+        set srcaddr "all"
+        set dstaddr "FG-90G-mgmt"
+        set action accept
+        set schedule "always"
+        set service "HTTPS" "SSH"
+        set logtraffic all
+    next
+end
