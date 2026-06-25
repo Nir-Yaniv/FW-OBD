@@ -22,8 +22,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from fw_obd.ai.change_planner import ChangePlan, ChangePlanner
 from fw_obd.ai.smart_terminal import ConversationContext, SmartTerminal
 from fw_obd.models.udm import Device
+from fw_obd.ui.change_plan_dialog import ChangePlanDialog
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +59,42 @@ class ChatStreamWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class ChangePlanWorker(QThread):
+    """Runs ChangePlanner.plan off the UI thread (Claude tool-use call)."""
+
+    ready = pyqtSignal(object)   # ChangePlan
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        planner: ChangePlanner,
+        device: object,
+        request: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._planner = planner
+        self._device = device
+        self._request = request
+
+    def run(self) -> None:
+        try:
+            device = self._device if isinstance(self._device, Device) else None
+            plan = self._planner.plan(device, self._request)
+            self.ready.emit(plan)
+        except Exception as exc:  # noqa: BLE001 — surface to UI
+            logger.exception("Change planning failed")
+            self.failed.emit(str(exc))
+
+
 class SmartTerminalWidget(QWidget):
     """
     Conversational chat panel backed by Claude.
 
     Works standalone (general FortiGate Q&A) and gains device context when
     a scan completes — call set_device(device) to inject the current firewall
-    state into the conversation.
+    state into the conversation. The "Plan Change" button turns a request into
+    a structured, reviewable command plan (dry-run preview only in v1).
     """
 
     status_message = pyqtSignal(str)
@@ -71,8 +102,10 @@ class SmartTerminalWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._terminal: Optional[SmartTerminal] = None
+        self._planner: Optional[ChangePlanner] = None
         self._context = ConversationContext()
         self._worker: Optional[ChatStreamWorker] = None
+        self._plan_worker: Optional[ChangePlanWorker] = None
         self._build()
 
     # ------------------------------------------------------------------
@@ -125,6 +158,19 @@ class SmartTerminalWidget(QWidget):
         )
         self._send_btn.clicked.connect(self._on_send)
         input_row.addWidget(self._send_btn)
+
+        self._plan_btn = QPushButton("🔧 Plan Change")
+        self._plan_btn.setToolTip(
+            "Turn this request into a reviewable command plan (dry-run preview — nothing is pushed)"
+        )
+        self._plan_btn.setStyleSheet(
+            "QPushButton { background-color: #1e2a38; color: white; padding: 10px 16px; "
+            "border: none; border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #2c3e50; }"
+            "QPushButton:disabled { background-color: #95a5a6; }"
+        )
+        self._plan_btn.clicked.connect(self._on_plan_change)
+        input_row.addWidget(self._plan_btn)
 
         reset_btn = QPushButton("↺ Reset")
         reset_btn.setStyleSheet("padding: 10px 14px; border-radius: 6px;")
@@ -205,6 +251,51 @@ class SmartTerminalWidget(QWidget):
         self._append_system("Conversation reset. Device context is preserved.")
 
     # ------------------------------------------------------------------
+    # Change planning (dry-run preview only)
+    # ------------------------------------------------------------------
+
+    def _on_plan_change(self) -> None:
+        request = self._input.text().strip()
+        if not request:
+            self._append_system("Type the change you want (e.g. 'enable logging on all allow policies'), then Plan Change.")
+            return
+        if self._plan_worker and self._plan_worker.isRunning():
+            return
+
+        planner = self._ensure_planner()
+        if planner is None:
+            return
+
+        self._input.clear()
+        self._append_role("You", "#2471a3")
+        self._transcript.insertPlainText(f"[plan] {request}\n\n")
+        self._append_system("Generating change plan…")
+
+        self._set_busy(True)
+        self._plan_worker = ChangePlanWorker(planner, self._context.device, request, self)
+        self._plan_worker.ready.connect(self._on_plan_ready)
+        self._plan_worker.failed.connect(self._on_plan_failed)
+        self._plan_worker.start()
+
+    def _on_plan_ready(self, plan: object) -> None:
+        self._set_busy(False)
+        if not isinstance(plan, ChangePlan):
+            return
+        dialog = ChangePlanDialog(plan, self)
+        if dialog.exec() == ChangePlanDialog.DialogCode.Accepted:
+            self._append_system(
+                f"✅ [DRY RUN] Approved — would execute {len(plan.commands)} command(s). "
+                "No SSH push (execution wired in a follow-up)."
+            )
+            logger.info("[DRY RUN] change plan approved: %s (%d cmds)", plan.intent, len(plan.commands))
+        else:
+            self._append_system("Change plan dismissed — nothing executed.")
+
+    def _on_plan_failed(self, message: str) -> None:
+        self._set_busy(False)
+        self._append_system(f"⚠️  {message}")
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -221,8 +312,22 @@ class SmartTerminalWidget(QWidget):
             )
             return None
 
+    def _ensure_planner(self) -> Optional[ChangePlanner]:
+        if self._planner is not None:
+            return self._planner
+        try:
+            self._planner = ChangePlanner()
+            return self._planner
+        except ValueError as exc:
+            self._append_system(
+                f"⚠️  {exc}\n\nAdd ANTHROPIC_API_KEY to your .env file, "
+                "then restart the app."
+            )
+            return None
+
     def _set_busy(self, busy: bool) -> None:
         self._send_btn.setEnabled(not busy)
+        self._plan_btn.setEnabled(not busy)
         self._input.setEnabled(not busy)
         self.status_message.emit("Assistant is thinking…" if busy else "Ready")
         if not busy:
