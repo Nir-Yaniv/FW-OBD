@@ -169,6 +169,7 @@ class DashboardWidget(QWidget):
     """
 
     status_message = pyqtSignal(str)
+    device_scanned = pyqtSignal(object)   # emits the parsed Device after a scan
 
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -314,6 +315,7 @@ class DashboardWidget(QWidget):
 
         assert isinstance(result, ScanResult)
         self._load_devices()
+        self.device_scanned.emit(result.device)
         self.status_message.emit(
             f"Audit complete — {len(result.report.findings)} finding(s), "
             f"status: {result.report.overall_status}"
