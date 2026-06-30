@@ -175,6 +175,31 @@ class Database:
                 (status, ts, device_id),
             )
 
+    def update_device(
+        self,
+        device_id: int,
+        name: str,
+        management_ip: str,
+        vendor: str = "Fortinet",
+        model: str = "",
+        location: str = "",
+        region: str = "",
+    ) -> None:
+        """Update editable inventory fields of a device by id.
+
+        Unlike upsert_device (keyed on management_ip), this updates by primary key,
+        so the management IP itself can be edited.
+        """
+        with self._tx() as conn:
+            conn.execute(
+                """
+                UPDATE devices
+                SET name=?, management_ip=?, vendor=?, model=?, location=?, region=?
+                WHERE id=?
+                """,
+                (name, management_ip, vendor, model, location, region, device_id),
+            )
+
     def delete_device(self, device_id: int) -> None:
         with self._tx() as conn:
             conn.execute("DELETE FROM devices WHERE id=?", (device_id,))

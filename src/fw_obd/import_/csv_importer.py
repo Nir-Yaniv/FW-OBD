@@ -1,4 +1,4 @@
-"""Import device inventory from CSV (SolarWinds, PRTG, or generic exports)."""
+"""Import device inventory from CSV or Excel (SolarWinds, PRTG, or generic exports)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ import logging
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
+
+EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 
 logger = logging.getLogger(__name__)
 
@@ -68,34 +70,31 @@ def _map_headers(fieldnames: list[str]) -> dict[str, str]:
     return mapping
 
 
-def parse_csv_text(
-    text: str,
+def _build_preview(
+    fieldnames: list[str],
+    dict_rows: Iterable[dict],
     column_map: Optional[dict[str, str]] = None,
 ) -> ImportPreview:
-    """
-    Parse CSV content into ImportRow objects.
+    """Build an ImportPreview from header names and dict-shaped rows.
 
-    If column_map is None, headers are auto-mapped via COLUMN_ALIASES.
-    column_map keys are canonical fields; values are exact CSV header names.
+    Shared by both the CSV and Excel parsers. ``column_map`` keys are canonical
+    fields; values are exact source header names. When None, headers are
+    auto-mapped via COLUMN_ALIASES.
     """
-    reader = csv.DictReader(StringIO(text))
-    if not reader.fieldnames:
-        return ImportPreview(rows=[], skipped=0, column_map={})
-
-    auto_map = _map_headers(reader.fieldnames)
+    auto_map = _map_headers(fieldnames)
     effective_map = column_map or auto_map
 
     ip_col = effective_map.get("management_ip")
     name_col = effective_map.get("name")
     if not ip_col or not name_col:
         raise ValueError(
-            "CSV must include management IP and device name columns. "
-            f"Detected headers: {reader.fieldnames}"
+            "File must include management IP and device name columns. "
+            f"Detected headers: {fieldnames}"
         )
 
     rows: list[ImportRow] = []
     skipped = 0
-    for line in reader:
+    for line in dict_rows:
         ip = (line.get(ip_col) or "").strip()
         name = (line.get(name_col) or "").strip()
         if not ip or not name:
@@ -120,6 +119,58 @@ def parse_csv_text(
     return ImportPreview(rows=rows, skipped=skipped, column_map=effective_map)
 
 
+def parse_csv_text(
+    text: str,
+    column_map: Optional[dict[str, str]] = None,
+) -> ImportPreview:
+    """Parse CSV content into ImportRow objects (see _build_preview for mapping)."""
+    reader = csv.DictReader(StringIO(text))
+    if not reader.fieldnames:
+        return ImportPreview(rows=[], skipped=0, column_map={})
+    return _build_preview(list(reader.fieldnames), reader, column_map)
+
+
 def parse_csv_file(path: Path, column_map: Optional[dict[str, str]] = None) -> ImportPreview:
     text = path.read_text(encoding="utf-8-sig")
     return parse_csv_text(text, column_map=column_map)
+
+
+def parse_excel_file(path: Path, column_map: Optional[dict[str, str]] = None) -> ImportPreview:
+    """Parse the first sheet of an .xlsx/.xlsm workbook into ImportRow objects.
+
+    Row 1 is treated as the header row. Cell values are coerced to stripped
+    strings so numeric cells (e.g. an IP typed as a number) still map cleanly.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        if ws is None:
+            return ImportPreview(rows=[], skipped=0, column_map={})
+        row_iter = ws.iter_rows(values_only=True)
+        try:
+            header = next(row_iter)
+        except StopIteration:
+            return ImportPreview(rows=[], skipped=0, column_map={})
+
+        fieldnames = ["" if h is None else str(h).strip() for h in header]
+        dict_rows: list[dict] = []
+        for raw in row_iter:
+            record = {
+                fieldnames[i]: ("" if raw[i] is None else str(raw[i]))
+                for i in range(len(fieldnames))
+                if i < len(raw)
+            }
+            dict_rows.append(record)
+    finally:
+        wb.close()
+
+    return _build_preview(fieldnames, dict_rows, column_map)
+
+
+def parse_import_file(path: Path, column_map: Optional[dict[str, str]] = None) -> ImportPreview:
+    """Dispatch to the CSV or Excel parser based on file extension."""
+    if path.suffix.lower() in EXCEL_SUFFIXES:
+        return parse_excel_file(path, column_map=column_map)
+    return parse_csv_file(path, column_map=column_map)

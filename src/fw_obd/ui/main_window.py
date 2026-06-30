@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 
 from fw_obd.db.database import Database
 from fw_obd.ui.dashboard import DashboardWidget
+from fw_obd.ui.devices_page import DevicesPageWidget
 
 
 class MainWindow(QMainWindow):
@@ -64,7 +65,9 @@ class MainWindow(QMainWindow):
         self._dashboard = DashboardWidget(self._db)
         self._dashboard.status_message.connect(self.set_status)
         self._pages.addWidget(self._dashboard)                         # index 0
-        self._pages.addWidget(self._placeholder("Devices (coming soon)"))  # index 1
+        self._devices = DevicesPageWidget(self._db)
+        self._devices.status_message.connect(self.set_status)
+        self._pages.addWidget(self._devices)                           # index 1
         self._pages.addWidget(self._placeholder("Reports (coming soon)"))  # index 2
         self._pages.addWidget(self._placeholder("Settings (coming soon)")) # index 3
         root_layout.addWidget(self._pages, stretch=1)
@@ -118,6 +121,8 @@ class MainWindow(QMainWindow):
         self._pages.setCurrentIndex(page_idx)
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == page_idx)
+        if page_idx == 1:  # refresh inventory on entering the Devices page
+            self._devices.reload()
 
     @staticmethod
     def _placeholder(text: str) -> QWidget:
