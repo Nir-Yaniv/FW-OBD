@@ -12,6 +12,7 @@ from fw_obd.db.database import Database
 from fw_obd.models.serialize import audit_report_to_json, device_to_json
 from fw_obd.models.udm import Device
 from fw_obd.parsers.fortigate.reader import FortiGateReader
+from fw_obd.security.crypto import Cipher
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +67,14 @@ def run_quick_audit_scan(
         software_version=device.software_version,
     )
     db.update_device_status(device_id, status)
+    # raw_config contains secrets (PSKs, SNMP communities, RADIUS/LDAP creds), so it
+    # is encrypted before persistence. Decrypt with Cipher().decrypt_str when reading.
+    encrypted_raw_config = Cipher().encrypt_str(raw_config) if raw_config else ""
     db.save_scan(
         device_id=device_id,
         scan_type="audit",
         udm_json=device_to_json(device),
-        raw_config=raw_config,
+        raw_config=encrypted_raw_config,
         findings_json=audit_report_to_json(report),
     )
     db.log_action(

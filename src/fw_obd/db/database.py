@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator, Optional
 
@@ -103,6 +103,20 @@ class Database:
         finally:
             conn.close()
 
+    @contextmanager
+    def _read(self) -> Generator[sqlite3.Connection, None, None]:
+        """Read-only connection that is always closed.
+
+        Note: a sqlite3 connection's own ``with`` block commits/rolls back but does
+        NOT close the connection, so reads must go through this helper to avoid
+        leaking connections.
+        """
+        conn = self._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def _init_schema(self) -> None:
         with self._tx() as conn:
             conn.executescript(SCHEMA_SQL)
@@ -142,19 +156,19 @@ class Database:
             return int(row["id"])
 
     def get_device(self, device_id: int) -> Optional[sqlite3.Row]:
-        with self._connect() as conn:
+        with self._read() as conn:
             return conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
 
     def get_device_by_ip(self, ip: str) -> Optional[sqlite3.Row]:
-        conn = self._connect()
-        return conn.execute("SELECT * FROM devices WHERE management_ip=?", (ip,)).fetchone()
+        with self._read() as conn:
+            return conn.execute("SELECT * FROM devices WHERE management_ip=?", (ip,)).fetchone()
 
     def list_devices(self) -> list[sqlite3.Row]:
-        conn = self._connect()
-        return conn.execute("SELECT * FROM devices ORDER BY region, location, name").fetchall()
+        with self._read() as conn:
+            return conn.execute("SELECT * FROM devices ORDER BY region, location, name").fetchall()
 
     def update_device_status(self, device_id: int, status: str, last_seen: Optional[datetime] = None) -> None:
-        ts = (last_seen or datetime.utcnow()).isoformat()
+        ts = (last_seen or datetime.now(timezone.utc)).isoformat()
         with self._tx() as conn:
             conn.execute(
                 "UPDATE devices SET status=?, last_seen=? WHERE id=?",
@@ -188,11 +202,11 @@ class Database:
             return int(cursor.lastrowid)  # type: ignore[arg-type]
 
     def get_latest_scan(self, device_id: int) -> Optional[sqlite3.Row]:
-        conn = self._connect()
-        return conn.execute(
-            "SELECT * FROM scan_results WHERE device_id=? ORDER BY scanned_at DESC LIMIT 1",
-            (device_id,),
-        ).fetchone()
+        with self._read() as conn:
+            return conn.execute(
+                "SELECT * FROM scan_results WHERE device_id=? ORDER BY scanned_at DESC LIMIT 1",
+                (device_id,),
+            ).fetchone()
 
     # ------------------------------------------------------------------
     # Audit log
@@ -217,15 +231,15 @@ class Database:
             )
 
     def get_audit_log(self, device_id: Optional[int] = None, limit: int = 100) -> list[sqlite3.Row]:
-        conn = self._connect()
-        if device_id:
+        with self._read() as conn:
+            if device_id:
+                return conn.execute(
+                    "SELECT * FROM audit_log WHERE device_id=? ORDER BY timestamp DESC LIMIT ?",
+                    (device_id, limit),
+                ).fetchall()
             return conn.execute(
-                "SELECT * FROM audit_log WHERE device_id=? ORDER BY timestamp DESC LIMIT ?",
-                (device_id, limit),
+                "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
             ).fetchall()
-        return conn.execute(
-            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?", (limit,)
-        ).fetchall()
 
     # ------------------------------------------------------------------
     # Backups
@@ -254,8 +268,26 @@ class Database:
             return int(cursor.lastrowid)  # type: ignore[arg-type]
 
     def list_backups(self, device_id: int) -> list[sqlite3.Row]:
-        conn = self._connect()
-        return conn.execute(
-            "SELECT * FROM backups WHERE device_id=? ORDER BY created_at DESC",
-            (device_id,),
-        ).fetchall()
+        with self._read() as conn:
+            return conn.execute(
+                "SELECT * FROM backups WHERE device_id=? ORDER BY created_at DESC",
+                (device_id,),
+            ).fetchall()
+
+    def purge_expired_backups(self, cutoff_iso: str) -> list[str]:
+        """Delete backup records whose expiry is before ``cutoff_iso``.
+
+        Returns the file paths of the deleted records so the caller can remove the
+        corresponding files. The select and delete run in a single transaction.
+        """
+        with self._tx() as conn:
+            rows = conn.execute(
+                "SELECT file_path FROM backups WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (cutoff_iso,),
+            ).fetchall()
+            file_paths = [row["file_path"] for row in rows]
+            conn.execute(
+                "DELETE FROM backups WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (cutoff_iso,),
+            )
+        return file_paths
