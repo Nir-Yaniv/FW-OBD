@@ -158,7 +158,7 @@ class FortiGateParser:
             r"([\w\-]+)\s*:\s*(?:expires?\s+)?(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}|never|n/a|permanent)",
             re.IGNORECASE,
         )
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
 
         for match in feature_pattern.finditer(output):
             feature_name = match.group(1).strip()
