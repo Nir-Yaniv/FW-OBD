@@ -92,10 +92,12 @@ class SmartTerminal:
     MAX_TOKENS = 2048
 
     def __init__(self, api_key: Optional[str] = None) -> None:
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        from fw_obd.services.config import get_api_key
+
+        key = api_key or get_api_key()
         if not key:
             raise ValueError(
-                "ANTHROPIC_API_KEY not set. Add it to your .env file or set the environment variable."
+                "ANTHROPIC_API_KEY not set. Add it in Settings, your .env file, or the environment."
             )
         self._client = anthropic.Anthropic(api_key=key)
 

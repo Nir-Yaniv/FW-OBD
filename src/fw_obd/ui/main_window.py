@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 from fw_obd.db.database import Database
 from fw_obd.ui.dashboard import DashboardWidget
 from fw_obd.ui.devices_page import DevicesPageWidget
+from fw_obd.ui.settings_page import SettingsPageWidget
 from fw_obd.ui.smart_terminal_widget import SmartTerminalWidget
 
 
@@ -78,7 +79,10 @@ class MainWindow(QMainWindow):
         self._devices.monitor_requested.connect(self._on_monitor_requested)
         self._pages.addWidget(self._devices)                           # index 2
         self._pages.addWidget(self._placeholder("Reports (coming soon)"))  # index 3
-        self._pages.addWidget(self._placeholder("Settings (coming soon)")) # index 4
+
+        self._settings = SettingsPageWidget()
+        self._settings.status_message.connect(self.set_status)
+        self._pages.addWidget(self._settings)                          # index 4
         root_layout.addWidget(self._pages, stretch=1)
 
         # -- Status bar --
@@ -137,7 +141,8 @@ class MainWindow(QMainWindow):
     def _on_monitor_requested(self, device: object, credentials: object, udm: object) -> None:
         """A device was connected — start live monitoring and show the Dashboard."""
         vdoms = len(getattr(udm, "vdoms", None) or []) or 1
-        self._dashboard.add_monitor(device, credentials, udm=udm, vdoms=vdoms)
+        interval = self._settings.config.poll_interval_secs
+        self._dashboard.add_monitor(device, credentials, udm=udm, vdoms=vdoms, interval_secs=interval)
         self._navigate(0)  # jump to the live Dashboard
 
     def closeEvent(self, event) -> None:  # noqa: N802
