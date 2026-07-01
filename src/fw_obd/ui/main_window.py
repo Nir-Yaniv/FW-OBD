@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 from fw_obd.db.database import Database
 from fw_obd.ui.dashboard import DashboardWidget
 from fw_obd.ui.devices_page import DevicesPageWidget
+from fw_obd.ui.smart_terminal_widget import SmartTerminalWidget
 
 
 class MainWindow(QMainWindow):
@@ -65,11 +66,17 @@ class MainWindow(QMainWindow):
         self._dashboard = DashboardWidget(self._db)
         self._dashboard.status_message.connect(self.set_status)
         self._pages.addWidget(self._dashboard)                         # index 0
+
+        self._terminal = SmartTerminalWidget()
+        self._terminal.status_message.connect(self.set_status)
+        self._dashboard.device_scanned.connect(self._terminal.set_device)
+        self._pages.addWidget(self._terminal)                          # index 1
+
         self._devices = DevicesPageWidget(self._db)
         self._devices.status_message.connect(self.set_status)
-        self._pages.addWidget(self._devices)                           # index 1
-        self._pages.addWidget(self._placeholder("Reports (coming soon)"))  # index 2
-        self._pages.addWidget(self._placeholder("Settings (coming soon)")) # index 3
+        self._pages.addWidget(self._devices)                           # index 2
+        self._pages.addWidget(self._placeholder("Reports (coming soon)"))  # index 3
+        self._pages.addWidget(self._placeholder("Settings (coming soon)")) # index 4
         root_layout.addWidget(self._pages, stretch=1)
 
         # -- Status bar --
@@ -96,9 +103,10 @@ class MainWindow(QMainWindow):
         self._nav_buttons: list[QPushButton] = []
         nav_items = [
             ("Dashboard", 0),
-            ("Devices", 1),
-            ("Reports", 2),
-            ("Settings", 3),
+            ("Smart Terminal", 1),
+            ("Devices", 2),
+            ("Reports", 3),
+            ("Settings", 4),
         ]
         for label, page_idx in nav_items:
             btn = QPushButton(label)
@@ -121,7 +129,7 @@ class MainWindow(QMainWindow):
         self._pages.setCurrentIndex(page_idx)
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == page_idx)
-        if page_idx == 1:  # refresh inventory on entering the Devices page
+        if page_idx == 2:  # refresh inventory on entering the Devices page
             self._devices.reload()
 
     @staticmethod
