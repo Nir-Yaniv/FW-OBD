@@ -74,6 +74,8 @@ class MainWindow(QMainWindow):
 
         self._devices = DevicesPageWidget(self._db)
         self._devices.status_message.connect(self.set_status)
+        # Connecting a device from the inventory starts live monitoring on the Dashboard.
+        self._devices.monitor_requested.connect(self._on_monitor_requested)
         self._pages.addWidget(self._devices)                           # index 2
         self._pages.addWidget(self._placeholder("Reports (coming soon)"))  # index 3
         self._pages.addWidget(self._placeholder("Settings (coming soon)")) # index 4
@@ -131,6 +133,16 @@ class MainWindow(QMainWindow):
             btn.setChecked(i == page_idx)
         if page_idx == 2:  # refresh inventory on entering the Devices page
             self._devices.reload()
+
+    def _on_monitor_requested(self, device: object, credentials: object, udm: object) -> None:
+        """A device was connected — start live monitoring and show the Dashboard."""
+        vdoms = len(getattr(udm, "vdoms", None) or []) or 1
+        self._dashboard.add_monitor(device, credentials, udm=udm, vdoms=vdoms)
+        self._navigate(0)  # jump to the live Dashboard
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._dashboard.stop_all()
+        super().closeEvent(event)
 
     @staticmethod
     def _placeholder(text: str) -> QWidget:

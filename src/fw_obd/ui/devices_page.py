@@ -183,11 +183,14 @@ class DevicesPageWidget(QWidget):
     """Region -> City -> Site device tree with flags and connectivity status."""
 
     status_message = pyqtSignal(str)
+    monitor_requested = pyqtSignal(object, object, object)  # device, credentials, udm
 
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._db = db
         self._scan_worker: DeviceScanWorker | None = None
+        self._pending_device: dict | None = None
+        self._pending_creds = None
         self._build()
         self.reload()
 
@@ -417,7 +420,9 @@ class DevicesPageWidget(QWidget):
             return
         self.status_message.emit(f"Connecting to {management_ip}…")
         self._pending_device_id = device_id
-        self._scan_worker = DeviceScanWorker(cred_dialog.credentials(), self._db, device_id, self)
+        self._pending_device = device
+        self._pending_creds = cred_dialog.credentials()
+        self._scan_worker = DeviceScanWorker(self._pending_creds, self._db, device_id, self)
         self._scan_worker.progress.connect(self.status_message.emit)
         self._scan_worker.finished_ok.connect(self._on_scan_finished)
         self._scan_worker.failed.connect(self._on_scan_failed)
@@ -432,6 +437,9 @@ class DevicesPageWidget(QWidget):
             f"Audit complete — {len(result.report.findings)} finding(s), "
             f"status: {result.report.overall_status}"
         )
+        # Hand off to the live Dashboard: start monitoring this device.
+        if self._pending_device is not None and self._pending_creds is not None:
+            self.monitor_requested.emit(self._pending_device, self._pending_creds, result.device)
         AuditReportDialog(result.report, self).exec()
 
     def _on_scan_failed(self, message: str) -> None:
