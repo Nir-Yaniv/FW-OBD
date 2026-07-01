@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 from fw_obd.db.database import Database
 from fw_obd.ui.dashboard import DashboardWidget
 from fw_obd.ui.devices_page import DevicesPageWidget
+from fw_obd.ui.reports_page import ReportsPageWidget
 from fw_obd.ui.settings_page import SettingsPageWidget
 from fw_obd.ui.smart_terminal_widget import SmartTerminalWidget
 
@@ -78,7 +79,10 @@ class MainWindow(QMainWindow):
         # Connecting a device from the inventory starts live monitoring on the Dashboard.
         self._devices.monitor_requested.connect(self._on_monitor_requested)
         self._pages.addWidget(self._devices)                           # index 2
-        self._pages.addWidget(self._placeholder("Reports (coming soon)"))  # index 3
+
+        self._reports = ReportsPageWidget(self._db)
+        self._reports.status_message.connect(self.set_status)
+        self._pages.addWidget(self._reports)                           # index 3
 
         self._settings = SettingsPageWidget()
         self._settings.status_message.connect(self.set_status)
@@ -137,6 +141,8 @@ class MainWindow(QMainWindow):
             btn.setChecked(i == page_idx)
         if page_idx == 2:  # refresh inventory on entering the Devices page
             self._devices.reload()
+        elif page_idx == 3:  # refresh scan history on entering the Reports page
+            self._reports.reload()
 
     def _on_monitor_requested(self, device: object, credentials: object, udm: object) -> None:
         """A device was connected — start live monitoring and show the Dashboard."""

@@ -248,6 +248,25 @@ class Database:
                 (device_id,),
             ).fetchone()
 
+    def get_scan(self, scan_id: int) -> Optional[sqlite3.Row]:
+        with self._read() as conn:
+            return conn.execute("SELECT * FROM scan_results WHERE id=?", (scan_id,)).fetchone()
+
+    def list_scans(self, limit: int = 200) -> list[sqlite3.Row]:
+        """Scan history across all devices, newest first, joined with device info."""
+        with self._read() as conn:
+            return conn.execute(
+                """
+                SELECT s.id, s.scanned_at, s.scan_type, s.findings_json,
+                       d.id AS device_id, d.name, d.management_ip, d.region, d.location
+                FROM scan_results s
+                JOIN devices d ON d.id = s.device_id
+                ORDER BY s.scanned_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
     # ------------------------------------------------------------------
     # Audit log
     # ------------------------------------------------------------------

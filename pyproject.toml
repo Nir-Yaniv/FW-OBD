@@ -13,7 +13,6 @@ dependencies = [
     "PyQt6>=6.7",
     "cryptography>=42.0",
     "anthropic>=0.28",
-    "openai>=1.30",
     "requests>=2.31",
     "pydantic>=2.7",
     "keyring>=25.2",
