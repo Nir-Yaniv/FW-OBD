@@ -1,335 +1,269 @@
-"""Dashboard page — shows all managed devices with health status."""
+"""Dashboard — live monitoring wall for the devices you are connected to.
+
+Each connected device gets a panel (site name + CPU/memory gauges + VDOM /
+sessions / bandwidth stats), and the grid splits to fit the number of devices.
+Panels update live from a MetricsPoller. The full inventory lives on the Devices
+page — this page only shows what is actively connected.
+"""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from fw_obd.connection.ssh_handler import SSHCredentials
 from fw_obd.db.database import Database
-from fw_obd.ui.audit_report_dialog import AuditReportDialog
-from fw_obd.ui.connect_dialog import ConnectDialog
-from fw_obd.ui.import_devices_dialog import ImportDevicesDialog
-from fw_obd.ui.scan_worker import DeviceScanWorker
+from fw_obd.services.metrics import DeviceMetrics
+from fw_obd.ui.metrics_poller import MetricsPoller
 
-# Status colour map
+# Kept for other modules (devices_page imports these).
 STATUS_COLORS = {
-    "healthy": "#27ae60",
-    "warning": "#f39c12",
-    "critical": "#e74c3c",
-    "offline": "#7f8c8d",
-    "unknown": "#95a5a6",
+    "healthy": "#27ae60", "warning": "#f39c12", "critical": "#e74c3c",
+    "offline": "#7f8c8d", "unknown": "#95a5a6", "online": "#27ae60",
 }
-
 STATUS_LABELS = {
-    "healthy": "All Clear",
-    "warning": "Warning",
-    "critical": "Critical",
-    "offline": "Offline",
-    "unknown": "Unknown",
+    "healthy": "Healthy", "warning": "Warning", "critical": "Critical",
+    "offline": "Offline", "unknown": "Unknown", "online": "Online",
 }
 
 
-class DeviceCard(QFrame):
-    """A single device summary card shown on the dashboard grid."""
+def _load_color(pct: float) -> QColor:
+    if pct < 60:
+        return QColor("#27ae60")
+    if pct < 85:
+        return QColor("#f39c12")
+    return QColor("#e74c3c")
 
-    connect_requested = pyqtSignal(int, str)   # device_id, management_ip
 
-    def __init__(self, device_row: dict, parent: QWidget | None = None) -> None:
+class Gauge(QWidget):
+    """Circular arc gauge showing a 0-100 percentage."""
+
+    def __init__(self, label: str) -> None:
+        super().__init__()
+        self._label = label
+        self._value = 0
+        self.setMinimumSize(120, 120)
+
+    def set_value(self, value: float) -> None:
+        self._value = max(0, min(100, int(round(value))))
+        self.update()
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = min(self.width(), self.height() - 18)
+        m = 10
+        rect = QRectF((self.width() - side) / 2 + m, m, side - 2 * m, side - 2 * m)
+        p.setPen(QPen(QColor("#e6eaef"), 10, cap=Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, 225 * 16, -270 * 16)
+        p.setPen(QPen(_load_color(self._value), 10, cap=Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, 225 * 16, int(-270 * 16 * self._value / 100))
+        p.setPen(QColor("#2c3e50"))
+        f = QFont(); f.setBold(True); f.setPointSize(20); p.setFont(f)
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{self._value}%")
+        f2 = QFont(); f2.setPointSize(9); p.setFont(f2)
+        p.setPen(QColor("#7f8c8d"))
+        p.drawText(self.rect().adjusted(0, self.height() - 18, 0, 0),
+                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, self._label)
+        p.end()
+
+
+def _stat_card(label: str, color: str = "#2c3e50") -> tuple[QWidget, QLabel]:
+    w = QWidget()
+    lay = QVBoxLayout(w); lay.setSpacing(0); lay.setContentsMargins(4, 4, 4, 4)
+    value = QLabel("—"); value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    value.setStyleSheet(f"font-size:19px;font-weight:bold;color:{color};")
+    cap = QLabel(label); cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    cap.setStyleSheet("font-size:10px;color:#7f8c8d;")
+    lay.addWidget(value); lay.addWidget(cap)
+    return w, value
+
+
+class DevicePanel(QFrame):
+    """Live metrics panel for one connected device."""
+
+    closed = pyqtSignal(int)  # device_id
+
+    def __init__(self, device: dict, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._device = device_row
-        self._build()
+        self._device_id = int(device["id"])
+        self.setObjectName("panel")
+        self.setStyleSheet(
+            "#panel{background:#ffffff;border:1px solid #dde3e9;border-radius:10px;}"
+        )
+        self.setMinimumSize(360, 250)
+        self._build(device)
 
-    def _build(self) -> None:
-        self.setObjectName("deviceCard")
-        self.setFixedSize(260, 160)
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    def _build(self, device: dict) -> None:
+        root = QVBoxLayout(self); root.setContentsMargins(16, 12, 16, 14); root.setSpacing(10)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
-
-        status = self._device.get("status", "unknown")
-        color = STATUS_COLORS.get(status, STATUS_COLORS["unknown"])
-        status_label = STATUS_LABELS.get(status, status.title())
-
-        # Header row: name + status dot
         header = QHBoxLayout()
-        name_lbl = QLabel(self._device.get("name", "Unknown"))
-        name_lbl.setStyleSheet("font-weight: bold; font-size: 14px;")
-        dot = QLabel("●")
-        dot.setStyleSheet(f"color: {color}; font-size: 16px;")
-        header.addWidget(name_lbl)
-        header.addStretch()
-        header.addWidget(dot)
-        layout.addLayout(header)
+        self._dot = QLabel("●"); self._dot.setStyleSheet("color:#f39c12;font-size:14px;")
+        name = QLabel(device.get("name") or device.get("management_ip", ""))
+        name.setStyleSheet("font-size:15px;font-weight:bold;color:#16324f;")
+        ip = QLabel(device.get("management_ip", "")); ip.setStyleSheet("color:#7f8c8d;")
+        close = QPushButton("✕"); close.setFixedSize(22, 22)
+        close.setStyleSheet("border:none;color:#95a5a6;font-weight:bold;")
+        close.clicked.connect(lambda: self.closed.emit(self._device_id))
+        header.addWidget(self._dot); header.addWidget(name); header.addStretch()
+        header.addWidget(ip); header.addWidget(close)
+        root.addLayout(header)
 
-        # Vendor + model
-        vendor_model = f"{self._device.get('vendor', '')} {self._device.get('model', '')}".strip()
-        layout.addWidget(QLabel(vendor_model or "Unknown model"))
+        gauges = QHBoxLayout()
+        self._cpu = Gauge("CPU"); self._mem = Gauge("Memory")
+        gauges.addWidget(self._cpu); gauges.addWidget(self._mem)
+        root.addLayout(gauges)
 
-        # IP + location
-        layout.addWidget(QLabel(f"IP: {self._device.get('management_ip', '-')}"))
-        loc = self._device.get("location", "")
-        if loc:
-            layout.addWidget(QLabel(f"Location: {loc}"))
+        stats = QHBoxLayout()
+        vdom_w, self._vdom = _stat_card("VDOMs")
+        sess_w, self._sessions = _stat_card("Sessions")
+        in_w, self._bw_in = _stat_card("Mbps in", "#2471a3")
+        out_w, self._bw_out = _stat_card("Mbps out", "#8e44ad")
+        for w in (vdom_w, sess_w, in_w, out_w):
+            stats.addWidget(w)
+        root.addLayout(stats)
 
-        # Status text
-        status_text = QLabel(status_label)
-        status_text.setStyleSheet(f"color: {color}; font-weight: bold;")
-        layout.addWidget(status_text)
+        self._footer = QLabel("Connecting… waiting for first sample")
+        self._footer.setStyleSheet("color:#7f8c8d;font-size:11px;")
+        root.addWidget(self._footer)
 
-        layout.addStretch()
+    def update_metrics(self, m: DeviceMetrics) -> None:
+        self._dot.setStyleSheet("color:#2ecc71;font-size:14px;")  # green — live
+        self._cpu.set_value(m.cpu_pct)
+        self._mem.set_value(m.mem_pct)
+        self._vdom.setText(str(m.vdoms))
+        self._sessions.setText(f"{m.sessions:,}")
+        self._bw_in.setText(f"↓ {m.bw_in_kbps / 1000:.1f}")
+        self._bw_out.setText(f"↑ {m.bw_out_kbps / 1000:.1f}")
+        self._footer.setText(f"Live · uptime {m.uptime}" if m.uptime else "Live")
 
-        # Connect button
-        connect_btn = QPushButton("Connect")
-        connect_btn.clicked.connect(self._on_connect)
-        layout.addWidget(connect_btn)
+    def set_offline(self, message: str) -> None:
+        self._dot.setStyleSheet("color:#e74c3c;font-size:14px;")  # red — lost
+        self._footer.setText(f"⚠ {message}")
 
-        self.setStyleSheet("""
-            #deviceCard {
-                background-color: #ffffff;
-                border: 1px solid #dde3e9;
-                border-radius: 8px;
-            }
-            #deviceCard:hover {
-                border-color: #2980b9;
-            }
-        """)
-
-    def _on_connect(self) -> None:
-        self.connect_requested.emit(
-            self._device.get("id", 0),
-            self._device.get("management_ip", ""),
-        )
-
-
-class AddDeviceDialog(QDialog):
-    """Simple dialog to add a new device manually."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Add Device")
-        self.setMinimumWidth(360)
-        self._build()
-
-    def _build(self) -> None:
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-
-        self._name = QLineEdit()
-        self._ip = QLineEdit()
-        self._ip.setPlaceholderText("e.g. 192.168.1.1")
-        self._location = QLineEdit()
-        self._region = QLineEdit()
-
-        form.addRow("Device Name *", self._name)
-        form.addRow("Management IP *", self._ip)
-        form.addRow("Location", self._location)
-        form.addRow("Region", self._region)
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def values(self) -> dict:
-        return {
-            "name": self._name.text().strip(),
-            "management_ip": self._ip.text().strip(),
-            "location": self._location.text().strip(),
-            "region": self._region.text().strip(),
-        }
-
-    def is_valid(self) -> bool:
-        return bool(self._name.text().strip() and self._ip.text().strip())
+    @property
+    def device_id(self) -> int:
+        return self._device_id
 
 
 class DashboardWidget(QWidget):
-    """
-    Dashboard page — shows a grid of DeviceCard widgets.
-    Toolbar at top: Add Device, Import CSV, search filter.
-    """
+    """Live monitoring grid of connected devices."""
 
     status_message = pyqtSignal(str)
-    device_scanned = pyqtSignal(object)   # emits the parsed Device after a scan
+    device_scanned = pyqtSignal(object)  # kept for smart-terminal context wiring
 
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._db = db
-        self._scan_worker: DeviceScanWorker | None = None
+        self._panels: dict[int, DevicePanel] = {}
+        self._pollers: dict[int, MetricsPoller] = {}
         self._build()
-        self._load_devices()
 
-    # ------------------------------------------------------------------
-    # Build
-    # ------------------------------------------------------------------
-
+    # ------------------------------------------------------------------ build
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(12)
 
-        # -- Toolbar --
-        toolbar = QHBoxLayout()
-        title = QLabel("Device Dashboard")
+        title = QLabel("Live Monitoring")
         title.setStyleSheet("font-size: 22px; font-weight: bold;")
-        toolbar.addWidget(title)
-        toolbar.addStretch()
+        root.addWidget(title)
 
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Search devices...")
-        self._search.setFixedWidth(220)
-        self._search.textChanged.connect(self._filter_cards)
-        toolbar.addWidget(self._search)
+        self._empty = QLabel(
+            "No devices connected yet.\n\nConnect a device from the Devices page "
+            "to see its live CPU, memory, VDOM, sessions and bandwidth here."
+        )
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setStyleSheet("color:#7f8c8d; font-size:14px; padding:60px;")
+        root.addWidget(self._empty, stretch=1)
 
-        add_btn = QPushButton("+ Add Device")
-        add_btn.clicked.connect(self._add_device)
-        toolbar.addWidget(add_btn)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._grid_host = QWidget()
+        self._grid = QGridLayout(self._grid_host)
+        self._grid.setSpacing(14)
+        self._grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._scroll.setWidget(self._grid_host)
+        self._scroll.hide()
+        root.addWidget(self._scroll, stretch=1)
 
-        import_btn = QPushButton("Import CSV")
-        import_btn.clicked.connect(self._import_devices)
-        toolbar.addWidget(import_btn)
+    # --------------------------------------------------------------- monitors
+    def add_monitor(
+        self,
+        device: dict,
+        credentials: SSHCredentials,
+        udm: object | None = None,
+        vdoms: int = 1,
+        interval_secs: int = 5,
+    ) -> None:
+        """Start (or restart) live monitoring for a device and show its panel."""
+        device_id = int(device["id"])
+        if device_id in self._pollers:
+            self._stop_poller(device_id)  # restart with a fresh session
 
-        root.addLayout(toolbar)
+        panel = self._panels.get(device_id)
+        if panel is None:
+            panel = DevicePanel(device)
+            panel.closed.connect(self._remove_monitor)
+            self._panels[device_id] = panel
 
-        # -- Scroll area with card grid --
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        poller = MetricsPoller(credentials, interval_secs=interval_secs, vdoms=vdoms)
+        poller.updated.connect(panel.update_metrics)
+        poller.failed.connect(lambda msg, pid=device_id: self._on_poll_failed(pid, msg))
+        self._pollers[device_id] = poller
+        poller.start()
 
-        self._card_container = QWidget()
-        self._card_grid = QGridLayout(self._card_container)
-        self._card_grid.setSpacing(16)
-        self._card_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        scroll.setWidget(self._card_container)
-        root.addWidget(scroll, stretch=1)
+        self._relayout()
+        self.status_message.emit(f"Monitoring {device.get('name', device_id)}")
+        if udm is not None:
+            self.device_scanned.emit(udm)
 
-        self._cards: list[DeviceCard] = []
+    def _on_poll_failed(self, device_id: int, message: str) -> None:
+        panel = self._panels.get(device_id)
+        if panel:
+            panel.set_offline(message)
+        self._db.update_device_status(device_id, "offline")
+        self.status_message.emit(f"Lost connection: {message}")
 
-    # ------------------------------------------------------------------
-    # Data
-    # ------------------------------------------------------------------
+    def _remove_monitor(self, device_id: int) -> None:
+        self._stop_poller(device_id)
+        panel = self._panels.pop(device_id, None)
+        if panel:
+            self._grid.removeWidget(panel)
+            panel.deleteLater()
+        self._relayout()
 
-    def _load_devices(self) -> None:
-        devices = self._db.list_devices()
-        self._render_cards([dict(row) for row in devices])
+    def _stop_poller(self, device_id: int) -> None:
+        poller = self._pollers.pop(device_id, None)
+        if poller:
+            poller.stop()
 
-    def _render_cards(self, devices: list[dict]) -> None:
-        # Clear existing
-        for card in self._cards:
-            self._card_grid.removeWidget(card)
-            card.deleteLater()
-        self._cards.clear()
-
-        if not devices:
-            empty = QLabel("No devices yet. Click '+ Add Device' to get started.")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setStyleSheet("color: #7f8c8d; font-size: 14px; padding: 40px;")
-            self._card_grid.addWidget(empty, 0, 0)
+    def _relayout(self) -> None:
+        panels = list(self._panels.values())
+        for p in panels:
+            self._grid.removeWidget(p)
+        if not panels:
+            self._scroll.hide()
+            self._empty.show()
             return
+        self._empty.hide()
+        self._scroll.show()
+        cols = 1 if len(panels) == 1 else 2
+        for i, panel in enumerate(panels):
+            self._grid.addWidget(panel, i // cols, i % cols)
 
-        cols = 4
-        for idx, device_row in enumerate(devices):
-            card = DeviceCard(device_row)
-            card.connect_requested.connect(self._on_connect_device)
-            self._cards.append(card)
-            self._card_grid.addWidget(card, idx // cols, idx % cols)
-
-    def _filter_cards(self, text: str) -> None:
-        query = text.lower()
-        for card in self._cards:
-            name = card._device.get("name", "").lower()
-            ip = card._device.get("management_ip", "").lower()
-            card.setVisible(query in name or query in ip)
-
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
-    def _add_device(self) -> None:
-        dialog = AddDeviceDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.is_valid():
-            values = dialog.values()
-            self._db.upsert_device(
-                name=values["name"],
-                management_ip=values["management_ip"],
-                location=values["location"],
-                region=values["region"],
-            )
-            self._load_devices()
-
-    def _import_devices(self) -> None:
-        dialog = ImportDevicesDialog(self._db, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._load_devices()
-            self.status_message.emit("Devices imported from CSV")
-
-    def _on_connect_device(self, device_id: int, management_ip: str) -> None:
-        from PyQt6.QtWidgets import QMessageBox
-
-        row = self._db.get_device(device_id)
-        device_name = row["name"] if row else management_ip
-
-        cred_dialog = ConnectDialog(management_ip, device_name, self)
-        if cred_dialog.exec() != QDialog.DialogCode.Accepted or not cred_dialog.is_valid():
-            return
-
-        if self._scan_worker and self._scan_worker.isRunning():
-            QMessageBox.warning(self, "Scan in progress", "Wait for the current scan to finish.")
-            return
-
-        self.status_message.emit(f"Connecting to {management_ip}…")
-        self._scan_worker = DeviceScanWorker(
-            cred_dialog.credentials(),
-            self._db,
-            device_id,
-            self,
-        )
-        self._scan_worker.progress.connect(self.status_message.emit)
-        self._scan_worker.finished_ok.connect(
-            lambda result: self._on_scan_finished(device_id, result)
-        )
-        self._scan_worker.failed.connect(self._on_scan_failed)
-        self._scan_worker.start()
-
-    def _on_scan_finished(self, device_id: int, result: object) -> None:
-        from fw_obd.services.device_scan import ScanResult
-
-        assert isinstance(result, ScanResult)
-        self._load_devices()
-        self.device_scanned.emit(result.device)
-        self.status_message.emit(
-            f"Audit complete — {len(result.report.findings)} finding(s), "
-            f"status: {result.report.overall_status}"
-        )
-        AuditReportDialog(result.report, self).exec()
-
-    def _on_scan_failed(self, message: str) -> None:
-        from PyQt6.QtWidgets import QMessageBox
-
-        self.status_message.emit("Connection failed")
-        QMessageBox.critical(self, "Connection failed", message)
-        self._db.log_action(
-            action="connect",
-            description=message,
-            success=False,
-            error_detail=message,
-        )
+    def stop_all(self) -> None:
+        """Stop every poller — call on application close."""
+        for device_id in list(self._pollers):
+            self._stop_poller(device_id)
