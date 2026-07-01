@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.7",
     "keyring>=25.2",
     "python-dotenv>=1.0",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,9 @@ fw-obd = "fw_obd.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"fw_obd.ui" = ["assets/flags/*.png"]
 
 [tool.black]
 line-length = 100

@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from fw_obd.db.database import Database
-from fw_obd.import_.csv_importer import parse_csv_file
+from fw_obd.import_.csv_importer import parse_import_file
 
 
 class ImportDevicesDialog(QDialog):
@@ -24,7 +24,7 @@ class ImportDevicesDialog(QDialog):
         super().__init__(parent)
         self._db = db
         self._path: Path | None = None
-        self.setWindowTitle("Import Devices from CSV")
+        self.setWindowTitle("Import Devices")
         self.setMinimumWidth(480)
         self._build()
 
@@ -32,8 +32,8 @@ class ImportDevicesDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Import from SolarWinds, PRTG, or any CSV with columns for "
-                "device name and management IP."
+                "Import from SolarWinds, PRTG, or any CSV/Excel file with columns "
+                "for device name and management IP."
             )
         )
 
@@ -61,16 +61,17 @@ class ImportDevicesDialog(QDialog):
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select CSV file",
+            "Select CSV or Excel file",
             "",
-            "CSV Files (*.csv);;All Files (*)",
+            "Device lists (*.csv *.xlsx *.xlsm);;CSV Files (*.csv);;"
+            "Excel Files (*.xlsx *.xlsm);;All Files (*)",
         )
         if not path:
             return
         self._path = Path(path)
         self._path_label.setText(self._path.name)
         try:
-            preview = parse_csv_file(self._path)
+            preview = parse_import_file(self._path)
             sample = preview.rows[:3]
             lines = [f"{r.name} — {r.management_ip}" for r in sample]
             extra = f" (+{len(preview.rows) - 3} more)" if len(preview.rows) > 3 else ""
@@ -84,10 +85,12 @@ class ImportDevicesDialog(QDialog):
 
     def _import(self) -> None:
         if not self._path:
-            self._preview_label.setText("<span style='color:red'>Select a CSV file first.</span>")
+            self._preview_label.setText(
+                "<span style='color:red'>Select a CSV or Excel file first.</span>"
+            )
             return
         try:
-            preview = parse_csv_file(self._path)
+            preview = parse_import_file(self._path)
         except ValueError as exc:
             self._preview_label.setText(f"<span style='color:red'>{exc}</span>")
             return
