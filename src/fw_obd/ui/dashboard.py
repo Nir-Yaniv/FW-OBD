@@ -29,10 +29,12 @@ from fw_obd.ui.metrics_poller import MetricsPoller
 # Kept for other modules (devices_page imports these).
 STATUS_COLORS = {
     "healthy": "#27ae60", "warning": "#f39c12", "critical": "#e74c3c",
+    "high": "#e67e22", "medium": "#f39c12", "low": "#27ae60",
     "offline": "#7f8c8d", "unknown": "#95a5a6", "online": "#27ae60",
 }
 STATUS_LABELS = {
     "healthy": "Healthy", "warning": "Warning", "critical": "Critical",
+    "high": "High", "medium": "Medium", "low": "Low",
     "offline": "Offline", "unknown": "Unknown", "online": "Online",
 }
 
