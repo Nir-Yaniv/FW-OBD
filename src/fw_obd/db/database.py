@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS devices (
     software_version TEXT,
     last_seen       TEXT,
     status          TEXT NOT NULL DEFAULT 'unknown',  -- online/offline/warning/critical
+    onsite_contact  TEXT,                             -- main on-site contact person
     notes           TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -120,6 +121,14 @@ class Database:
     def _init_schema(self) -> None:
         with self._tx() as conn:
             conn.executescript(SCHEMA_SQL)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add columns introduced after the initial schema to existing databases."""
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+        if "onsite_contact" not in cols:
+            conn.execute("ALTER TABLE devices ADD COLUMN onsite_contact TEXT")
 
     # ------------------------------------------------------------------
     # Device CRUD
@@ -136,21 +145,25 @@ class Database:
         region: str = "",
         serial_number: str = "",
         software_version: str = "",
+        onsite_contact: str = "",
     ) -> int:
         """Insert or update a device record. Returns the device id."""
         with self._tx() as conn:
             conn.execute(
                 """
                 INSERT INTO devices (name, management_ip, vendor, model, hostname,
-                                     location, region, serial_number, software_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     location, region, serial_number, software_version,
+                                     onsite_contact)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(management_ip) DO UPDATE SET
                     name=excluded.name, vendor=excluded.vendor, model=excluded.model,
                     hostname=excluded.hostname, location=excluded.location,
                     region=excluded.region, serial_number=excluded.serial_number,
-                    software_version=excluded.software_version
+                    software_version=excluded.software_version,
+                    onsite_contact=COALESCE(NULLIF(excluded.onsite_contact, ''), devices.onsite_contact)
                 """,
-                (name, management_ip, vendor, model, hostname, location, region, serial_number, software_version),
+                (name, management_ip, vendor, model, hostname, location, region,
+                 serial_number, software_version, onsite_contact),
             )
             row = conn.execute("SELECT id FROM devices WHERE management_ip=?", (management_ip,)).fetchone()
             return int(row["id"])
@@ -184,6 +197,7 @@ class Database:
         model: str = "",
         location: str = "",
         region: str = "",
+        onsite_contact: str = "",
     ) -> None:
         """Update editable inventory fields of a device by id.
 
@@ -194,10 +208,11 @@ class Database:
             conn.execute(
                 """
                 UPDATE devices
-                SET name=?, management_ip=?, vendor=?, model=?, location=?, region=?
+                SET name=?, management_ip=?, vendor=?, model=?, location=?, region=?,
+                    onsite_contact=?
                 WHERE id=?
                 """,
-                (name, management_ip, vendor, model, location, region, device_id),
+                (name, management_ip, vendor, model, location, region, onsite_contact, device_id),
             )
 
     def delete_device(self, device_id: int) -> None:

@@ -37,6 +37,9 @@ fw-obd = "fw_obd.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"fw_obd.ui" = ["assets/flags/*.png"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
