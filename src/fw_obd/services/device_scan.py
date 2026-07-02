@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from fw_obd.audit.quick_audit import AuditReport, QuickAuditEngine
-from fw_obd.connection.ssh_handler import SSHCredentials, SSHHandler, ssh_session
+from fw_obd.connection.ssh_handler import SSHConnectionError, SSHCredentials, SSHHandler
 from fw_obd.db.database import Database
 from fw_obd.models.serialize import audit_report_to_json, device_to_json
 from fw_obd.models.udm import Device
@@ -17,6 +17,14 @@ from fw_obd.security.crypto import Cipher
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str], None]
+
+
+class ScanError(Exception):
+    """The scan broke AFTER the device was successfully reached.
+
+    Deliberately not an SSHConnectionError: callers dispatch on exception type
+    to tell 'device unreachable' apart from 'reachable but scan failed'.
+    """
 
 
 @dataclass
@@ -42,7 +50,9 @@ def run_quick_audit_scan(
             progress(msg)
 
     _progress("Connecting via SSH…")
-    with ssh_session(credentials) as ssh:
+    ssh = SSHHandler(credentials)
+    ssh.connect()  # an SSHConnectionError here means the device was never reached
+    try:
         reader = FortiGateReader(ssh)
 
         def cmd_progress(command: str, idx: int, total: int) -> None:
@@ -52,7 +62,20 @@ def run_quick_audit_scan(
         device = reader.read_audit_config(progress_cb=cmd_progress)
 
         _progress("Backing up running configuration…")
-        raw_config = reader.read_raw_backup()
+        try:
+            raw_config = reader.read_raw_backup()
+        except SSHConnectionError as exc:
+            # The audit data is already in hand — a slow or failed backup must
+            # not discard it. Persist the scan without a raw config snapshot.
+            logger.warning("Config backup failed, continuing without it: %s", exc)
+            _progress("Config backup failed — keeping audit results")
+            raw_config = ""
+    except SSHConnectionError as exc:
+        # The connect above succeeded, so this is NOT "device unreachable" —
+        # re-raise under a type the worker classifies as a scan failure.
+        raise ScanError(str(exc)) from exc
+    finally:
+        ssh.disconnect()
 
     report = QuickAuditEngine().run(device)
     status = report.overall_status

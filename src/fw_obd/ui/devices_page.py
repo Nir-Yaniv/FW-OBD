@@ -474,6 +474,7 @@ class DevicesPageWidget(QWidget):
         self._scan_worker.progress.connect(self.status_message.emit)
         self._scan_worker.finished_ok.connect(self._on_scan_finished)
         self._scan_worker.failed.connect(self._on_scan_failed)
+        self._scan_worker.scan_error.connect(self._on_scan_error)
         self._scan_worker.start()
 
     def _on_scan_finished(self, result: object) -> None:
@@ -499,7 +500,22 @@ class DevicesPageWidget(QWidget):
         self.status_message.emit("Connection failed")
         QMessageBox.critical(self, "Connection failed", message)
         self._db.log_action(
-            action="connect", description=message, success=False, error_detail=message
+            action="connect", description=message, device_id=device_id,
+            success=False, error_detail=message,
+        )
+
+    def _on_scan_error(self, message: str) -> None:
+        # The device WAS reachable — record the successful contact (dot goes
+        # green, last_seen stamped) even though the scan itself broke.
+        device_id = getattr(self, "_pending_device_id", None)
+        if device_id is not None:
+            self._db.update_device_status(device_id, "online")
+            self.reload()
+        self.status_message.emit("Scan failed (device was reachable)")
+        QMessageBox.warning(self, "Scan failed", message)
+        self._db.log_action(
+            action="scan", description=message, device_id=device_id,
+            success=False, error_detail=message,
         )
 
     # ------------------------------------------------------------- filtering

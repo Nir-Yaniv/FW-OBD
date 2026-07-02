@@ -121,12 +121,17 @@ class SSHHandler:
     # Command execution
     # ------------------------------------------------------------------
 
-    def send_command(self, command: str, expect_string: Optional[str] = None, delay_factor: float = 1.0) -> str:
-        """Execute a command and return the output as a string."""
+    def send_command(self, command: str, expect_string: Optional[str] = None, read_timeout: float = 30.0) -> str:
+        """Execute a command and return the output as a string.
+
+        read_timeout is Netmiko 4.x's wait-for-prompt budget. Long outputs
+        (e.g. full config dumps) need a larger value — the old delay_factor
+        knob is silently ignored by Netmiko 4.
+        """
         self.ensure_connected()
         assert self._connection is not None
         try:
-            kwargs: dict = {"command_string": command, "delay_factor": delay_factor}
+            kwargs: dict = {"command_string": command, "read_timeout": read_timeout}
             if expect_string:
                 kwargs["expect_string"] = expect_string
             output: str = self._connection.send_command(**kwargs)
@@ -135,11 +140,11 @@ class SSHHandler:
         except NetmikoBaseException as exc:
             raise SSHConnectionError(f"Command failed '{command}': {exc}") from exc
 
-    def send_command_timing(self, command: str, delay: float = 1.0) -> str:
+    def send_command_timing(self, command: str) -> str:
         """Use timing-based (non-prompt-wait) command for config mode sequences."""
         self.ensure_connected()
         assert self._connection is not None
-        output: str = self._connection.send_command_timing(command_string=command, delay_factor=delay)
+        output: str = self._connection.send_command_timing(command_string=command)
         return output
 
     def send_config_commands(self, commands: list[str]) -> str:
