@@ -446,7 +446,7 @@ class DevicesPageWidget(QWidget):
         # SSH could not connect -> mark the device offline so its dot goes red.
         device_id = getattr(self, "_pending_device_id", None)
         if device_id is not None:
-            self._db.update_device_status(device_id, "offline")
+            self._db.update_device_status(device_id, "offline", touch_last_seen=False)
             self.reload()
         self.status_message.emit("Connection failed")
         QMessageBox.critical(self, "Connection failed", message)

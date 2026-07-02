@@ -180,13 +180,26 @@ class Database:
         with self._read() as conn:
             return conn.execute("SELECT * FROM devices ORDER BY region, location, name").fetchall()
 
-    def update_device_status(self, device_id: int, status: str, last_seen: Optional[datetime] = None) -> None:
-        ts = (last_seen or datetime.now(timezone.utc)).isoformat()
+    def update_device_status(
+        self,
+        device_id: int,
+        status: str,
+        last_seen: Optional[datetime] = None,
+        *,
+        touch_last_seen: bool = True,
+    ) -> None:
+        """Update device status. last_seen means "last successful contact":
+        failure paths (connect failed, poller lost the device) pass
+        touch_last_seen=False so a failed attempt is never stamped."""
         with self._tx() as conn:
-            conn.execute(
-                "UPDATE devices SET status=?, last_seen=? WHERE id=?",
-                (status, ts, device_id),
-            )
+            if touch_last_seen:
+                ts = (last_seen or datetime.now(timezone.utc)).isoformat()
+                conn.execute(
+                    "UPDATE devices SET status=?, last_seen=? WHERE id=?",
+                    (status, ts, device_id),
+                )
+            else:
+                conn.execute("UPDATE devices SET status=? WHERE id=?", (status, device_id))
 
     def update_device(
         self,
