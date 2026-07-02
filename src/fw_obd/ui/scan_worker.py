@@ -6,13 +6,14 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from fw_obd.connection.ssh_handler import SSHCredentials, SSHConnectionError
 from fw_obd.db.database import Database
-from fw_obd.services.device_scan import ScanResult, run_quick_audit_scan
+from fw_obd.services.device_scan import ScanError, ScanResult, run_quick_audit_scan
 
 
 class DeviceScanWorker(QThread):
     progress = pyqtSignal(str)
     finished_ok = pyqtSignal(object)  # ScanResult
-    failed = pyqtSignal(str)
+    failed = pyqtSignal(str)          # could not connect — device unreachable
+    scan_error = pyqtSignal(str)      # connected fine, but the scan itself broke
 
     def __init__(
         self,
@@ -35,7 +36,9 @@ class DeviceScanWorker(QThread):
                 progress=self.progress.emit,
             )
             self.finished_ok.emit(result)
+        except ScanError as exc:
+            self.scan_error.emit(str(exc))
         except SSHConnectionError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
-            self.failed.emit(f"Scan failed: {exc}")
+            self.scan_error.emit(f"Scan failed after connecting: {exc}")

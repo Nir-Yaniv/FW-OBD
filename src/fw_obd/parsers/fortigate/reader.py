@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from fw_obd.connection.ssh_handler import SSHHandler
+from fw_obd.connection.ssh_handler import SSHConnectionError, SSHHandler
 from fw_obd.models.udm import Device
 from fw_obd.parsers.fortigate import commands as cmds
 from fw_obd.parsers.fortigate.parser import FortiGateParser
@@ -39,7 +39,9 @@ class FortiGateReader:
     def read_raw_backup(self) -> str:
         """Retrieve the full running configuration as a raw string for backup."""
         logger.info("Reading full configuration for backup")
-        return self._ssh.send_command(cmds.SHOW_FULL_CONFIG, delay_factor=4.0)
+        # Full config dumps run to thousands of lines on real devices; give
+        # Netmiko a generous prompt-wait budget so the stream can finish.
+        return self._ssh.send_command(cmds.SHOW_FULL_CONFIG, read_timeout=120.0)
 
     # ------------------------------------------------------------------
 
@@ -52,10 +54,21 @@ class FortiGateReader:
                 progress_cb(command, idx, total)
             logger.debug("Running [%d/%d]: %s", idx, total, command)
             try:
-                output = self._ssh.send_command(command, delay_factor=2.0)
+                output = self._ssh.send_command(command, read_timeout=30.0)
                 raw_outputs[command] = output
             except Exception as exc:
+                if not self._ssh.is_connected:
+                    # Session is gone: every remaining command would fail too,
+                    # and parsing the empty outputs would fabricate a bogus
+                    # "successful" audit of a blank config.
+                    raise SSHConnectionError(
+                        f"SSH session lost while running '{command}'"
+                    ) from exc
                 logger.warning("Command failed '%s': %s", command, exc)
                 raw_outputs[command] = ""
 
+        if sequence and not any(raw_outputs.values()):
+            raise RuntimeError(
+                "Every command returned no output — refusing to parse an empty config"
+            )
         return self._parser.parse(raw_outputs)
