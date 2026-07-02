@@ -235,7 +235,7 @@ class DashboardWidget(QWidget):
         panel = self._panels.get(device_id)
         if panel:
             panel.set_offline(message)
-        self._db.update_device_status(device_id, "offline")
+        self._db.update_device_status(device_id, "offline", touch_last_seen=False)
         self.status_message.emit(f"Lost connection: {message}")
 
     def _remove_monitor(self, device_id: int) -> None:
