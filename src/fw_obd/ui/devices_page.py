@@ -487,8 +487,18 @@ class DevicesPageWidget(QWidget):
             f"status: {result.report.overall_status}"
         )
         # Hand off to the live Dashboard: start monitoring this device.
-        if self._pending_device is not None and self._pending_creds is not None:
+        # The metrics poller is SSH-only — REST connections skip the handoff.
+        from fw_obd.connection.ssh_handler import SSHCredentials
+
+        if (
+            self._pending_device is not None
+            and isinstance(self._pending_creds, SSHCredentials)
+        ):
             self.monitor_requested.emit(self._pending_device, self._pending_creds, result.device)
+        elif self._pending_creds is not None:
+            self.status_message.emit(
+                "Connected via HTTPS — live dashboard monitoring is not yet available for REST connections"
+            )
         AuditReportDialog(result.report, self).exec()
 
     def _on_scan_failed(self, message: str) -> None:

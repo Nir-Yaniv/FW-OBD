@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from fw_obd.connection.ssh_handler import SSHCredentials, SSHConnectionError
 from fw_obd.db.database import Database
-from fw_obd.services.device_scan import ScanError, ScanResult, run_quick_audit_scan
+from fw_obd.services.device_scan import (
+    CONNECTION_ERRORS,
+    Credentials,
+    ScanError,
+    ScanResult,
+    run_quick_audit_scan,
+)
 
 
 class DeviceScanWorker(QThread):
@@ -17,7 +22,7 @@ class DeviceScanWorker(QThread):
 
     def __init__(
         self,
-        credentials: SSHCredentials,
+        credentials: Credentials,
         db: Database,
         device_id: int,
         parent=None,
@@ -38,7 +43,7 @@ class DeviceScanWorker(QThread):
             self.finished_ok.emit(result)
         except ScanError as exc:
             self.scan_error.emit(str(exc))
-        except SSHConnectionError as exc:
+        except CONNECTION_ERRORS as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
             self.scan_error.emit(f"Scan failed after connecting: {exc}")
