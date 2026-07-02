@@ -4,19 +4,30 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 from fw_obd.audit.quick_audit import AuditReport, QuickAuditEngine
+from fw_obd.connection.rest_client import (
+    FortiGateRESTClient,
+    RESTConnectionError,
+    RESTCredentials,
+)
 from fw_obd.connection.ssh_handler import SSHConnectionError, SSHCredentials, SSHHandler
 from fw_obd.db.database import Database
 from fw_obd.models.serialize import audit_report_to_json, device_to_json
 from fw_obd.models.udm import Device
 from fw_obd.parsers.fortigate.reader import FortiGateReader
+from fw_obd.parsers.fortigate.rest_reader import FortiGateRESTReader
 from fw_obd.security.crypto import Cipher
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str], None]
+
+Credentials = Union[SSHCredentials, RESTCredentials]
+
+# Either transport's "device unreachable / transport-level" error family.
+CONNECTION_ERRORS = (SSHConnectionError, RESTConnectionError)
 
 
 class ScanError(Exception):
@@ -35,26 +46,31 @@ class ScanResult:
 
 
 def run_quick_audit_scan(
-    credentials: SSHCredentials,
+    credentials: Credentials,
     db: Database,
     device_id: int,
     progress: Optional[ProgressCallback] = None,
 ) -> ScanResult:
     """
-    Connect via SSH, run the audit command sequence, parse UDM, run Quick Audit,
-    persist scan results, and update device inventory fields.
+    Connect (SSH or HTTPS/REST by credential type), read audit data, parse UDM,
+    run Quick Audit, persist scan results, and update device inventory fields.
     """
 
     def _progress(msg: str) -> None:
         if progress:
             progress(msg)
 
-    _progress("Connecting via SSH…")
-    ssh = SSHHandler(credentials)
-    ssh.connect()  # an SSHConnectionError here means the device was never reached
+    if isinstance(credentials, RESTCredentials):
+        _progress("Connecting via HTTPS (REST API)…")
+        conn = FortiGateRESTClient(credentials)
+        conn.connect()  # a RESTConnectionError here means the device was never reached
+        reader: Union[FortiGateReader, FortiGateRESTReader] = FortiGateRESTReader(conn)
+    else:
+        _progress("Connecting via SSH…")
+        conn = SSHHandler(credentials)
+        conn.connect()  # an SSHConnectionError here means the device was never reached
+        reader = FortiGateReader(conn)
     try:
-        reader = FortiGateReader(ssh)
-
         def cmd_progress(command: str, idx: int, total: int) -> None:
             _progress(f"Reading config ({idx}/{total}): {command}")
 
@@ -64,18 +80,18 @@ def run_quick_audit_scan(
         _progress("Backing up running configuration…")
         try:
             raw_config = reader.read_raw_backup()
-        except SSHConnectionError as exc:
+        except CONNECTION_ERRORS as exc:
             # The audit data is already in hand — a slow or failed backup must
             # not discard it. Persist the scan without a raw config snapshot.
             logger.warning("Config backup failed, continuing without it: %s", exc)
             _progress("Config backup failed — keeping audit results")
             raw_config = ""
-    except SSHConnectionError as exc:
+    except CONNECTION_ERRORS as exc:
         # The connect above succeeded, so this is NOT "device unreachable" —
         # re-raise under a type the worker classifies as a scan failure.
         raise ScanError(str(exc)) from exc
     finally:
-        ssh.disconnect()
+        conn.disconnect()
 
     report = QuickAuditEngine().run(device)
     status = report.overall_status
