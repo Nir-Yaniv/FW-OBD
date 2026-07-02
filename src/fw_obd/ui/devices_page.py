@@ -5,6 +5,9 @@ Layout:
   * City and site rows show just their name and a count.
   * Device (leaf) rows show a connectivity dot: green = reachable, red = down /
     SSH failed, grey = not tested yet — plus an On-site Contact column.
+  * Once a device has been successfully contacted (last_seen set), a small
+    vendor badge (FGT / PAN / CSCO / CHKP) appears between the dot and the
+    name, and the Type column gains the detected model (e.g. FortiGate-60F).
 Double-click a device to connect; right-click for Edit / Delete.
 """
 
@@ -12,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import QRect, Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -44,7 +47,7 @@ COLUMNS = ["Site / Device", "Type", "IP Address", "Status", "On-site Contact", "
 _DEVICE_ROLE = Qt.ItemDataRole.UserRole
 _FLAG_DIR = Path(__file__).resolve().parent / "assets" / "flags"
 
-ICON_BOX = QSize(32, 22)
+ICON_BOX = QSize(56, 22)  # wide enough for connectivity dot + vendor badge
 FLAG_CELL = QSize(26, 17)     # every flag is scaled to fit this same cell
 FLAG_OPACITY = 0.55
 
@@ -54,6 +57,15 @@ _DOT_COLORS = {
     "unknown": ("#c2c8d0", "#a2a9b3"),    # grey — not tested yet
 }
 _DOT_UP = ("#2ecc71", "#22a35c")           # green — reachable / online
+
+# Vendor badge (abbreviation, fill, edge) in brand colours. Shown only after a
+# successful connection, so the badge reflects what was actually detected.
+_VENDOR_BADGES = {
+    "Fortinet": ("FGT", "#da291c", "#a51f15"),
+    "Palo Alto": ("PAN", "#fa582d", "#c74522"),
+    "Cisco": ("CSCO", "#049fd9", "#0380ae"),
+    "Check Point": ("CHKP", "#e6007e", "#b30063"),
+}
 
 _TREE_STYLESHEET = """
 QTreeWidget { background: #ffffff; border: 1px solid #dde3e9; border-radius: 6px; outline: 0; }
@@ -88,7 +100,7 @@ def _flag_icon(region: str) -> QIcon:
     canvas.fill(Qt.GlobalColor.transparent)
     p = QPainter(canvas)
     p.setOpacity(FLAG_OPACITY)
-    x = (ICON_BOX.width() - fitted.width()) // 2
+    x = 3  # left-anchored: the box is wider than a flag to make room for badges
     y = (ICON_BOX.height() - fitted.height()) // 2
     p.drawPixmap(x, y, fitted)
     p.setOpacity(1.0)
@@ -101,10 +113,13 @@ def _flag_icon(region: str) -> QIcon:
     return icon
 
 
-def _status_icon(status: str) -> QIcon:
-    """Connectivity dot: green up / red down / grey untested (cached)."""
-    if status in _dot_cache:
-        return _dot_cache[status]
+def _device_icon(status: str, vendor: str = "") -> QIcon:
+    """Connectivity dot (green up / red down / grey untested), plus a small
+    vendor badge between the dot and the device name once the vendor is
+    confirmed by a successful connection (cached)."""
+    key = f"{status}|{vendor}"
+    if key in _dot_cache:
+        return _dot_cache[key]
     fill, edge = _DOT_COLORS.get(status, _DOT_UP)
     pm = QPixmap(ICON_BOX)
     pm.fill(Qt.GlobalColor.transparent)
@@ -114,9 +129,23 @@ def _status_icon(status: str) -> QIcon:
     p.setBrush(QColor(fill))
     d = 12
     p.drawEllipse(6, (ICON_BOX.height() - d) // 2, d, d)
+    badge = _VENDOR_BADGES.get(vendor)
+    if badge:
+        text, b_fill, b_edge = badge
+        w, h = 32, 16
+        x, y = 22, (ICON_BOX.height() - h) // 2
+        p.setPen(QPen(QColor(b_edge), 1))
+        p.setBrush(QColor(b_fill))
+        p.drawRoundedRect(x, y, w, h, 4, 4)
+        f = QFont()
+        f.setBold(True)
+        f.setPixelSize(9)
+        p.setFont(f)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(QRect(x, y, w, h), Qt.AlignmentFlag.AlignCenter, text)
     p.end()
     icon = QIcon(pm)
-    _dot_cache[status] = icon
+    _dot_cache[key] = icon
     return icon
 
 
@@ -230,7 +259,7 @@ class DevicesPageWidget(QWidget):
         self._tree = QTreeWidget()
         self._tree.setColumnCount(len(COLUMNS))
         self._tree.setHeaderLabels(COLUMNS)
-        for i, w in enumerate([430, 80, 140, 90, 160]):
+        for i, w in enumerate([430, 150, 140, 90, 160]):
             self._tree.setColumnWidth(i, w)
         self._tree.setIconSize(ICON_BOX)
         self._tree.setIndentation(22)
@@ -290,21 +319,40 @@ class DevicesPageWidget(QWidget):
 
     def _add_device_row(self, parent: QTreeWidgetItem, device: dict) -> None:
         status = device.get("status", "unknown") or "unknown"
+        seen = bool(device.get("last_seen"))  # last_seen = last successful contact
         last_seen = (device.get("last_seen") or "").replace("T", " ")[:19] or "Never"
         label = classify(device.get("name", ""))
+        # Vendor/model are only trusted once confirmed by a real connection.
+        vendor = (device.get("vendor") or "") if seen else ""
+        model = (device.get("model") or "") if seen else ""
+        type_text = model if label == "Other" and model else (f"{label} · {model}" if model else label)
         from fw_obd.ui.dashboard import STATUS_LABELS
 
         item = QTreeWidgetItem(
             [
                 device.get("name", ""),
-                label,
+                type_text,
                 device.get("management_ip", ""),
                 STATUS_LABELS.get(status, status.title()),
                 device.get("onsite_contact", "") or "—",
                 last_seen,
             ]
         )
-        item.setIcon(0, _status_icon(status))  # connectivity dot on the equipment only
+        item.setIcon(0, _device_icon(status, vendor))  # dot + vendor badge on the equipment only
+        if seen:
+            tip_lines = [device.get("name", "")]
+            if vendor or model:
+                tip_lines.append(f"{vendor} {model}".strip())
+            if device.get("hostname"):
+                tip_lines.append(f"Hostname: {device['hostname']}")
+            if device.get("serial_number"):
+                tip_lines.append(f"Serial: {device['serial_number']}")
+            if device.get("software_version"):
+                tip_lines.append(f"Firmware: {device['software_version']}")
+            tip_lines.append(f"Last seen: {last_seen}")
+            tip = "\n".join(tip_lines)
+            for col in range(len(COLUMNS)):
+                item.setToolTip(col, tip)
         if label == "Main":  # bold the Main device so it stands out from its backups
             f = QFont(); f.setBold(True)
             item.setFont(0, f); item.setFont(1, f)
